@@ -13,7 +13,7 @@ from app.config.database import SessionLocal
 from app.constants.roles import ROLE_ADMIN, ROLE_ANALYST, ROLE_VIEWER
 from app.constants.rfm import REFERENCE_DATE, RANDOM_STATE
 from app.models import Member, OrderFact, SegmentRun, User
-from app.services import segment_service
+from app.services import batch_versioning, segment_service
 from app.utils.logger import log_event
 from app.utils.password import hash_password
 from scripts.seed_data import STORES, build_demo_dataset
@@ -111,7 +111,31 @@ def _ensure_orders(db, order_rows: list[dict]) -> None:
 def _ensure_segment(db, admin: User) -> None:
     run = db.scalar(select(SegmentRun).where(SegmentRun.run_no == SEED_RUN_NO))
     if run is not None:
+        # 兼容旧库：补齐指纹 / 校验报告 / 当前版本标记，历史批次仍保留
+        if run.status == "completed" and run.result:
+            if not run.input_fingerprint:
+                run.input_fingerprint = batch_versioning.input_fingerprint(
+                    db, run.as_of, run.k_requested, run.random_state
+                )
+            if not run.validation_report:
+                run.validation_report = batch_versioning.validate_run_result(db, run)
+            if run.validation_report.get("ok") and not run.is_current:
+                batch_versioning.activate_run(db, run)
+            db.commit()
         return
+
+    fingerprint = batch_versioning.input_fingerprint(db, REFERENCE_DATE, "auto", RANDOM_STATE)
+    # 接口已跑出同内容批次时直接复用，避免固定 run_no 与指纹唯一索引冲突
+    same_input = batch_versioning.find_replayable_run(db, fingerprint)
+    if same_input is not None:
+        log_event("SEED_SEGMENT_REUSE", run_id=same_input.id, run_no=same_input.run_no)
+        if same_input.validation_report is None:
+            same_input.validation_report = batch_versioning.validate_run_result(db, same_input)
+        if same_input.validation_report.get("ok") and not same_input.is_current:
+            batch_versioning.activate_run(db, same_input)
+        db.commit()
+        return
+
     run = SegmentRun(
         run_no=SEED_RUN_NO,
         name="2026-11 会员 RFM 基线分群",
@@ -119,6 +143,7 @@ def _ensure_segment(db, admin: User) -> None:
         k_requested="auto",
         as_of=REFERENCE_DATE,
         random_state=RANDOM_STATE,
+        input_fingerprint=fingerprint,
         created_by=admin.id,
     )
     db.add(run)

@@ -12,6 +12,7 @@ from app.constants.error_codes import AppError, ErrorCode
 from app.models import SegmentRun, Strategy, User
 from app.services import budget_engine, segment_service
 from app.utils.formatting import to_iso
+from app.utils.logger import log_event
 
 
 def _next_strategy_no(db: Session) -> str:
@@ -70,6 +71,7 @@ def serialize_strategy(db: Session, strategy: Strategy) -> dict:
         "run_id": strategy.run_id,
         "run_no": run.run_no if run else None,
         "run_as_of": run.as_of.isoformat() if run else None,
+        "run_is_current": bool(run and run.is_current),
         "selected_k": run.selected_k if run else None,
         "silhouette": float(run.silhouette) if run and run.silhouette is not None else None,
         "total_budget": float(strategy.total_budget),
@@ -78,9 +80,67 @@ def serialize_strategy(db: Session, strategy: Strategy) -> dict:
         "tiers_used": strategy.tiers_used or [],
         "touch_log": entries,
         "export_count": len([entry for entry in entries if entry.get("kind") == "export"]),
+        "budget_usage": _budget_usage(strategy),
         "created_at": to_iso(strategy.created_at),
         "updated_at": to_iso(strategy.updated_at),
         "published_at": to_iso(strategy.published_at),
+    }
+
+
+def _budget_usage(strategy: Strategy) -> dict:
+    """按「去重后的实际触达簇」计算预算占用。
+
+    同一策略下同一簇无论导出/触达多少次（含补录重跑的重复请求），只占一次预算：
+    占用额取该簇预算分配，已触达人数取该簇名单去重后的可触达人数口径（簇 reachable）。
+    这样重复运行同一补录不会重复占用预算，页面也能核对预算与实际触达是否错位。
+    """
+    entries = strategy.touch_log or []
+    allocations = {
+        item.get("cluster_key"): item for item in (strategy.allocations or [])
+    }
+    touched_keys: list[str] = []
+    seen: set[str] = set()
+    for entry in entries:
+        if entry.get("kind") != "export":
+            continue
+        key = entry.get("cluster_key")
+        if key and key not in seen:
+            seen.add(key)
+            touched_keys.append(key)
+
+    per_cluster = []
+    occupied = 0.0
+    reachable_touched = 0
+    export_entries = 0
+    for key in touched_keys:
+        allocation = allocations.get(key) or {}
+        budget = float(allocation.get("budget") or 0)
+        reachable = int(allocation.get("reachable_count") or 0)
+        occupied += budget
+        reachable_touched += reachable
+        export_entries += 1
+        per_cluster.append(
+            {
+                "cluster_key": key,
+                "label": allocation.get("label"),
+                "budget": budget,
+                "coupon_face": allocation.get("coupon_face"),
+                "reachable_count": reachable,
+            }
+        )
+
+    total_budget = float(strategy.total_budget or 0)
+    raw_export_count = len([entry for entry in entries if entry.get("kind") == "export"])
+    return {
+        "total_budget": total_budget,
+        "occupied_budget": round(occupied, 2),
+        "remaining_budget": round(total_budget - occupied, 2),
+        "occupancy_rate": round(occupied / total_budget, 4) if total_budget else 0.0,
+        "touched_cluster_count": export_entries,
+        "touched_reachable_members": reachable_touched,
+        "raw_export_count": raw_export_count,
+        "duplicate_export_count": max(raw_export_count - export_entries, 0),
+        "per_cluster": per_cluster,
     }
 
 
@@ -156,6 +216,39 @@ def record_export(db: Session, strategy: Strategy, payload, user: User) -> dict:
     cluster = _cluster_or_404(run, payload.cluster_key)
     rows = segment_service.get_cluster_members_all(db, run, payload.cluster_key)
     entries = list(strategy.touch_log or [])
+
+    # 幂等去重：同策略 + 同簇 + 同渠道已导出过，或幂等键已存在 → 直接复用原记录，
+    # 不新增触达记录、不重复占用预算（重复运行同一补录的关键约束）。
+    idem_key = (payload.idempotency_key or "").strip() or None
+    duplicate = next(
+        (
+            entry
+            for entry in entries
+            if entry.get("kind") == "export"
+            and (
+                (idem_key and entry.get("idempotency_key") == idem_key)
+                or (
+                    entry.get("cluster_key") == payload.cluster_key
+                    and entry.get("channel") == payload.channel
+                )
+            )
+        ),
+        None,
+    )
+    if duplicate is not None:
+        log_event(
+            "STRATEGY_EXPORT_DEDUP",
+            strategy_id=strategy.id,
+            export_id=duplicate.get("id"),
+            cluster_key=payload.cluster_key,
+            channel=payload.channel,
+        )
+        return {
+            "entry": duplicate,
+            "download_url": f"/api/strategies/{strategy.id}/exports/{duplicate['id']}/download",
+            "deduplicated": True,
+        }
+
     sequence = len([entry for entry in entries if str(entry.get("id", "")).startswith("EXP-")]) + 1
     entry = {
         "id": f"EXP-{sequence:04d}",
@@ -167,6 +260,7 @@ def record_export(db: Session, strategy: Strategy, payload, user: User) -> dict:
         "row_count": len(rows),
         "created_by": user.email,
         "created_at": datetime.now(timezone.utc).isoformat(),
+        "idempotency_key": idem_key,
     }
     strategy.touch_log = entries + [entry]
     db.commit()
@@ -174,6 +268,7 @@ def record_export(db: Session, strategy: Strategy, payload, user: User) -> dict:
     return {
         "entry": entry,
         "download_url": f"/api/strategies/{strategy.id}/exports/{entry['id']}/download",
+        "deduplicated": False,
     }
 
 

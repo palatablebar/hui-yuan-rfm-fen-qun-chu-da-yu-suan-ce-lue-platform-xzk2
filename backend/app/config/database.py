@@ -2,9 +2,18 @@
 import time
 
 from sqlalchemy import create_engine
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.config.settings import settings
+
+
+# 测试环境用 SQLite 内存库跑端到端逻辑：把 PG 专属 JSONB 编译成 SQLite JSON，
+# 生产 PostgreSQL 行为完全不变。
+@compiles(JSONB, "sqlite")
+def _sqlite_jsonb(type_, compiler, **kw):  # pragma: no cover - 测试适配
+    return "JSON"
 
 
 class Base(DeclarativeBase):

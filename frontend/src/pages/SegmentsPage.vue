@@ -36,6 +36,15 @@
     />
 
     <div v-if="run" class="kpi-strip" data-testid="segment-kpis">
+      <div class="kpi" :class="{ 'kpi-current': run.is_current }">
+        <div class="kpi-label">批次版本</div>
+        <div class="kpi-value" style="font-size: var(--step-1)">
+          {{ run.is_current ? '当前版本' : '历史版本' }}
+        </div>
+        <div class="kpi-foot">
+          {{ run.run_no }}<template v-if="run.validation_ok === false"> · 校验未通过</template>
+        </div>
+      </div>
       <div class="kpi">
         <div class="kpi-label">会员样本</div>
         <div class="kpi-value">{{ formatInt(run.member_count) }}<small>人</small></div>
@@ -62,6 +71,16 @@
         <div class="kpi-foot">耗时 {{ formatDuration(run.duration_ms) }}</div>
       </div>
     </div>
+
+    <BatchVersionPanel
+      v-if="run"
+      class="version-panel"
+      :run="run"
+      :reconciliation="store.reconciliation"
+      :can-activate="auth.canRunSegment"
+      :activating="activating"
+      @activate="onActivate"
+    />
 
     <div v-if="run" class="stack" style="margin-top: 20px">
       <div class="grid-2">
@@ -115,6 +134,14 @@
             <p v-if="run.error_message" class="muted" style="margin-top: 8px; color: var(--danger)">
               {{ run.error_message }}
             </p>
+            <p
+              v-if="run.status === 'completed' && run.validation_ok === false"
+              class="muted"
+              style="margin-top: 8px; color: var(--danger)"
+              data-testid="validation-failed-note"
+            >
+              整批校验未通过，未切换当前版本；页面与已发布策略仍指向原版本名单。
+            </p>
           </StrataPanel>
         </div>
       </div>
@@ -158,6 +185,7 @@ import StatusTag from '../components/common/StatusTag.vue'
 import ClusterProfileCard from '../components/common/ClusterProfileCard.vue'
 import ClusterScatter from '../components/common/ClusterScatter.vue'
 import SilhouetteCurve from '../components/common/SilhouetteCurve.vue'
+import BatchVersionPanel from '../components/common/BatchVersionPanel.vue'
 import EmptyState from '../components/common/EmptyState.vue'
 import ErrorNotice from '../components/common/ErrorNotice.vue'
 import { useSegmentStore } from '../stores/segmentStore'
@@ -175,6 +203,7 @@ import { formatDateTime, formatDuration } from '../utils/formatTime'
 const store = useSegmentStore()
 const auth = useAuthStore()
 const activeCluster = ref('')
+const activating = ref(false)
 
 const run = computed(() => store.current)
 const activeClusterData = computed(() =>
@@ -193,15 +222,30 @@ async function loadRun(runId: number) {
     if (!activeCluster.value || !detail.clusters?.some((item) => item.cluster_key === activeCluster.value)) {
       activeCluster.value = detail.clusters?.[0]?.cluster_key ?? ''
     }
+    if (detail.status === 'completed') {
+      await store.loadReconciliation(runId).catch(() => undefined)
+    }
   } catch {
     /* store.error 已记录 */
+  }
+}
+
+async function onActivate(runId: number) {
+  activating.value = true
+  try {
+    await store.activate(runId)
+    await store.loadReconciliation(runId).catch(() => undefined)
+  } catch {
+    /* store.error 已记录 */
+  } finally {
+    activating.value = false
   }
 }
 
 async function reload() {
   try {
     await store.loadRuns()
-    const target = store.currentId ?? store.latestCompleted?.id
+    const target = store.currentId ?? store.currentVersion?.id
     if (target) await loadRun(target)
   } catch {
     /* handled */
@@ -221,7 +265,8 @@ async function runSegment() {
 onMounted(async () => {
   try {
     await store.loadRuns()
-    const target = store.currentId ?? store.latestCompleted?.id ?? store.runs[0]?.id
+    // 默认展示当前版本（is_current），而不是简单取最新批次
+    const target = store.currentId ?? store.currentVersion?.id ?? store.runs[0]?.id
     if (target) await loadRun(target)
   } catch {
     /* handled */
@@ -231,7 +276,30 @@ onMounted(async () => {
 watch(
   () => store.current?.status,
   (status) => {
-    if (status === 'completed') store.loadRuns().catch(() => undefined)
+    if (status === 'completed') {
+      store.loadRuns().catch(() => undefined)
+      if (store.currentId) {
+        store.loadReconciliation(store.currentId).catch(() => undefined)
+      }
+    }
   },
 )
 </script>
+
+<style scoped>
+.kpi-strip {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+.kpi-current {
+  background: color-mix(in oklch, var(--ok) 10%, var(--paper));
+  box-shadow: inset 0 2px 0 var(--ok);
+}
+.version-panel {
+  margin-top: 18px;
+}
+@media (max-width: 980px) {
+  .kpi-strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+</style>

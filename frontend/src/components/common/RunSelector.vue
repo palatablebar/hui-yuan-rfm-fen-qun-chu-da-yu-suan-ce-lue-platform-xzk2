@@ -5,11 +5,13 @@
       class="select"
       :value="modelValue ?? ''"
       :disabled="disabled"
+      data-testid="run-selector"
       @change="onChange"
     >
       <option v-if="!runs.length" value="">暂无批次</option>
       <option v-for="run in runs" :key="run.id" :value="run.id">
-        {{ run.run_no }} · {{ statusLabel(run.status) }} · k={{ run.selected_k ?? run.k_requested }}
+        {{ run.run_no }}{{ run.is_current ? ' · 当前版本' : '' }} · {{ statusLabel(run.status) }} ·
+        k={{ run.selected_k ?? run.k_requested }}
       </option>
     </select>
   </label>
@@ -47,6 +49,6 @@ function onChange(event: Event) {
   gap: 10px;
 }
 .run-selector .select {
-  min-width: 280px;
+  min-width: 300px;
 }
 </style>

@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
 
 from app.config.database import get_db
-from app.constants.roles import ROLE_ADMIN, ROLE_ANALYST, SEGMENT_WRITE_ROLES
+from app.constants.roles import SEGMENT_WRITE_ROLES
 from app.controllers import segment_controller
 from app.middlewares.auth import get_current_user, require_roles
 from app.models import User
@@ -18,6 +18,14 @@ def list_runs(
     _user: User = Depends(get_current_user),
 ) -> dict:
     return segment_controller.list_runs(db, limit)
+
+
+@router.get("/runs/current")
+def get_current_run(
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user),
+) -> dict:
+    return segment_controller.current_run(db)
 
 
 @router.post("/runs", status_code=201)
@@ -37,6 +45,25 @@ def get_run(
     _user: User = Depends(get_current_user),
 ) -> dict:
     return segment_controller.get_run(db, run_id)
+
+
+@router.post("/runs/{run_id}/activate")
+def activate_run(
+    run_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    _user: User = Depends(require_roles(*sorted(SEGMENT_WRITE_ROLES))),
+) -> dict:
+    return segment_controller.activate_run(db, request, run_id)
+
+
+@router.get("/runs/{run_id}/reconciliation")
+def reconcile_run(
+    run_id: int,
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user),
+) -> dict:
+    return segment_controller.reconcile_run(db, run_id)
 
 
 @router.get("/runs/{run_id}/members")

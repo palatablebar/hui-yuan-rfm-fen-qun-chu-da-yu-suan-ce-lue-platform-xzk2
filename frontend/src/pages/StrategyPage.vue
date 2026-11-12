@@ -17,6 +17,10 @@
     <div v-if="!auth.canWriteStrategy" class="notice" style="margin-bottom: 16px">
       当前角色只读策略。创建 / 发布策略需要 admin（运营主管），接口会返回 HTTP 403。
     </div>
+    <div v-if="current && current.run_is_current === false" class="notice" style="margin-bottom: 16px" data-testid="stale-run-notice">
+      策略 {{ current.strategy_no }} 绑定的 {{ current.run_no }} 已不是当前版本（补录后产生了新批次）。
+      已发布策略继续指向旧名单与旧预算口径，不会自动漂移；如需按新名单触达，请基于当前版本新建策略。
+    </div>
     <div v-if="store.notice" class="notice ok" style="margin-bottom: 16px">{{ store.notice }}</div>
     <ErrorNotice v-if="store.error" :message="store.error" style="margin-bottom: 16px" @retry="reload" />
 
@@ -90,6 +94,28 @@
               </div>
             </div>
             <p class="muted policy">{{ current.totals.tier_policy }}</p>
+            <div v-if="current.budget_usage" class="budget-usage" data-testid="budget-usage">
+              <div class="usage-row">
+                <span class="eyebrow">已占用预算（按去重触达簇）</span>
+                <b>{{ formatMoney(current.budget_usage.occupied_budget) }} /
+                  {{ formatMoney(current.budget_usage.total_budget) }}</b>
+              </div>
+              <div class="usage-bar">
+                <div
+                  class="usage-bar-fill"
+                  :style="{ width: `${Math.min(current.budget_usage.occupancy_rate * 100, 100)}%` }"
+                />
+              </div>
+              <div class="usage-foot muted">
+                剩余 {{ formatMoney(current.budget_usage.remaining_budget) }} ·
+                实际触达 {{ current.budget_usage.touched_cluster_count }} 个簇 /
+                {{ current.budget_usage.touched_reachable_members }} 名可触达会员 ·
+                导出动作 {{ current.budget_usage.raw_export_count }} 次
+                <template v-if="current.budget_usage.duplicate_export_count > 0">
+                  （{{ current.budget_usage.duplicate_export_count }} 次重复请求已去重，未重复占预算）
+                </template>
+              </div>
+            </div>
             <div class="row">
               <button
                 class="btn btn-primary"
@@ -268,7 +294,7 @@ async function publish() {
 async function reload() {
   try {
     await segmentStore.loadRuns()
-    const target = selectedRunId.value ?? segmentStore.latestCompleted?.id
+    const target = selectedRunId.value ?? segmentStore.currentVersion?.id
     if (target) await selectRun(target)
   } catch {
     /* handled */
@@ -278,7 +304,7 @@ async function reload() {
 onMounted(async () => {
   try {
     await segmentStore.loadRuns()
-    const target = segmentStore.latestCompleted?.id ?? segmentStore.runs[0]?.id
+    const target = segmentStore.currentVersion?.id ?? segmentStore.runs[0]?.id
     if (target) await selectRun(target)
   } catch {
     /* handled */
@@ -330,6 +356,34 @@ onMounted(async () => {
 }
 .strategy-row.active {
   background: color-mix(in oklch, var(--sand-1) 60%, transparent);
+}
+.budget-usage {
+  margin: 12px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in oklch, var(--sand-1) 35%, transparent);
+}
+.usage-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+}
+.usage-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--line-strong) 45%, transparent);
+  overflow: hidden;
+  margin: 8px 0 6px;
+}
+.usage-bar-fill {
+  height: 100%;
+  background: var(--ok);
+  transition: width 0.3s ease;
+}
+.usage-foot {
+  font-size: var(--step--1);
 }
 @media (max-width: 980px) {
   .budget-form {

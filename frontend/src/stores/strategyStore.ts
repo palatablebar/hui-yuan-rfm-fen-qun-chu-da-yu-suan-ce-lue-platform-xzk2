@@ -102,15 +102,26 @@ export const useStrategyStore = defineStore('strategy', {
       this.saving = true
       this.error = ''
       try {
-        const result = await createExport(strategyId, { cluster_key: clusterKey, channel, note })
-        if (this.current) {
-          this.current = {
-            ...this.current,
-            touch_log: [...this.current.touch_log, result.entry],
-            export_count: this.current.export_count + 1,
+        // 稳定幂等键：同一策略 + 簇 + 渠道在本页面会话内复用，刷新/重试不会重复建名单
+        const idempotencyKey = `exp-${strategyId}-${clusterKey}-${channel}`
+        const result = await createExport(strategyId, {
+          cluster_key: clusterKey,
+          channel,
+          note,
+          idempotency_key: idempotencyKey,
+        })
+        if (result.deduplicated) {
+          this.notice = `该簇已通过「${channel}」导出过，复用原触达记录 ${result.entry.id}，未重复占用预算`
+        } else {
+          this.notice = `已生成 ${result.entry.row_count} 行名单（${result.entry.id}）`
+          if (this.current) {
+            this.current = {
+              ...this.current,
+              touch_log: [...this.current.touch_log, result.entry],
+              export_count: this.current.export_count + 1,
+            }
           }
         }
-        this.notice = `已生成 ${result.entry.row_count} 行名单（${result.entry.id}）`
         return result
       } catch (error) {
         this.error = (error as { message?: string }).message ?? '导出失败'

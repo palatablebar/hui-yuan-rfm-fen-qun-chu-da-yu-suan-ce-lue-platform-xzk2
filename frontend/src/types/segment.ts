@@ -1,5 +1,62 @@
 export type SegmentStatus = 'queued' | 'running' | 'completed' | 'failed'
 
+export interface ValidationCheck {
+  name: string
+  ok: boolean
+  expected: number | string
+  actual: number | string
+  detail?: string | null
+}
+
+export interface ValidationClusterLine {
+  cluster_key: string
+  label?: string
+  member_count: number
+  assignment_count: number
+  reachable_count: number
+  reachable_actual: number
+  count_match: boolean
+  reachable_match: boolean
+}
+
+export interface ValidationReport {
+  ok: boolean
+  checked_at: string
+  checks: ValidationCheck[]
+  clusters: ValidationClusterLine[]
+}
+
+export interface ReconciliationCluster {
+  cluster_key: string
+  label?: string
+  kind?: string
+  profile_member_count: number
+  assignment_count: number
+  match: boolean
+  reachable_count: number
+  gmv_total?: number
+  gmv_share?: number
+}
+
+export interface Reconciliation {
+  run_id: number
+  run_no: string
+  is_current: boolean
+  status: string
+  totals: {
+    members_in_db: number
+    members_in_run: number
+    assignments: number
+    orders_in_db: number
+    order_gmv: number
+    cluster_profile_sum: number
+    reachable_sum: number
+  }
+  checks: ValidationCheck[]
+  validation_ok: boolean
+  clusters: ReconciliationCluster[]
+}
+
 export interface RunSummary {
   id: number
   run_no: string
@@ -14,6 +71,10 @@ export interface RunSummary {
   cluster_count: number
   duration_ms: number | null
   error_message: string | null
+  is_current: boolean
+  current_since: string | null
+  input_fingerprint: string | null
+  validation_ok: boolean | null
   created_at: string | null
   completed_at: string | null
 }
@@ -83,4 +144,10 @@ export interface RunDetail extends RunSummary {
   gmv_total?: number
   assignments_count?: number
   scoring_note?: string
+  validation_report?: ValidationReport | null
+}
+
+export interface CreateRunResult {
+  run: RunSummary
+  replayed: boolean
 }

@@ -42,6 +42,27 @@ export interface TouchEntry {
   row_count: number
   created_by?: string | null
   created_at: string
+  idempotency_key?: string | null
+}
+
+export interface BudgetUsageCluster {
+  cluster_key: string
+  label?: string
+  budget: number
+  coupon_face?: number
+  reachable_count: number
+}
+
+export interface BudgetUsage {
+  total_budget: number
+  occupied_budget: number
+  remaining_budget: number
+  occupancy_rate: number
+  touched_cluster_count: number
+  touched_reachable_members: number
+  raw_export_count: number
+  duplicate_export_count: number
+  per_cluster: BudgetUsageCluster[]
 }
 
 export interface Strategy {
@@ -52,6 +73,7 @@ export interface Strategy {
   run_id: number
   run_no: string | null
   run_as_of: string | null
+  run_is_current?: boolean
   selected_k: number | null
   silhouette: number | null
   total_budget: number
@@ -60,6 +82,7 @@ export interface Strategy {
   tiers_used: number[]
   touch_log: TouchEntry[]
   export_count: number
+  budget_usage?: BudgetUsage
   created_at: string | null
   updated_at: string | null
   published_at: string | null
@@ -77,4 +100,5 @@ export interface ExportPreview {
 export interface ExportResult {
   entry: TouchEntry
   download_url: string
+  deduplicated?: boolean
 }

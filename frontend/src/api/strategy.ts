@@ -29,7 +29,7 @@ export function previewExport(strategyId: number, clusterKey: string): Promise<E
 
 export function createExport(
   strategyId: number,
-  payload: { cluster_key: string; channel: string; note?: string },
+  payload: { cluster_key: string; channel: string; note?: string; idempotency_key?: string },
 ): Promise<ExportResult> {
   return http.post<ExportResult>(`/strategies/${strategyId}/exports`, payload)
 }

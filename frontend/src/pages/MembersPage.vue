@@ -211,7 +211,7 @@ async function goPage(next: number) {
 async function reload() {
   try {
     await store.loadRuns()
-    const target = store.currentId ?? store.latestCompleted?.id
+    const target = store.currentId ?? store.currentVersion?.id
     if (target) await loadRun(target)
   } catch {
     /* handled */
@@ -223,7 +223,7 @@ onMounted(async () => {
   orderStore.loadSummary().catch(() => undefined)
   try {
     await store.loadRuns()
-    const target = store.currentId ?? store.latestCompleted?.id ?? store.runs[0]?.id
+    const target = store.currentId ?? store.currentVersion?.id ?? store.runs[0]?.id
     if (target) await loadRun(target)
   } catch {
     /* handled */

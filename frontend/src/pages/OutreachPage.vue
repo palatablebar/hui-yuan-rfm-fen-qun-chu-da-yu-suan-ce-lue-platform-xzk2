@@ -100,6 +100,15 @@
       <template #meta>
         <span>{{ strategy.touch_log.length }} 条</span>
       </template>
+      <div v-if="strategy.budget_usage" class="notice plain" style="margin-bottom: 12px" data-testid="outreach-budget-usage">
+        已占用预算 <b>{{ formatMoney(strategy.budget_usage.occupied_budget) }}</b> /
+        总预算 {{ formatMoney(strategy.budget_usage.total_budget) }} ·
+        触达 {{ strategy.budget_usage.touched_cluster_count }} 个簇、
+        {{ strategy.budget_usage.touched_reachable_members }} 名可触达会员
+        <template v-if="strategy.budget_usage.duplicate_export_count > 0">
+          · {{ strategy.budget_usage.duplicate_export_count }} 次重复导出已去重，未重复占预算
+        </template>
+      </div>
       <table class="data-table" data-testid="touch-log">
         <thead>
           <tr>
@@ -171,6 +180,7 @@ import { useStrategyStore } from '../stores/strategyStore'
 import { useSegmentStore } from '../stores/segmentStore'
 import { useAuthStore } from '../stores/authStore'
 import { downloadFile } from '../utils/request'
+import { formatMoney } from '../utils/formatNumber'
 import { formatDateTime } from '../utils/formatTime'
 import { STRATEGY_STATUS_META } from '../constants/strategyStatus'
 import type { StrategyStatus } from '../types/strategy'
@@ -254,10 +264,15 @@ async function onClusterChange() {
 
 async function doExport() {
   if (!strategy.value) return
+  const strategyId = strategy.value.id
   try {
-    const result = await store.exportList(strategy.value.id, clusterKey.value, channel.value)
-    latestExportId.value = result.entry.id
-    await store.loadPreview(strategy.value.id, clusterKey.value)
+    const result = await store.exportList(strategyId, clusterKey.value, channel.value)
+    if (!result.deduplicated) {
+      latestExportId.value = result.entry.id
+    }
+    // 无论是否去重，都刷新策略详情（触达记录 / 预算占用）与预览
+    await store.loadStrategy(strategyId)
+    await store.loadPreview(strategyId, clusterKey.value)
   } catch {
     /* handled */
   }
@@ -278,7 +293,7 @@ async function download(exportId: string) {
 async function reload() {
   try {
     await segmentStore.loadRuns()
-    const target = selectedRunId.value ?? segmentStore.latestCompleted?.id
+    const target = selectedRunId.value ?? segmentStore.currentVersion?.id
     if (target) await selectRun(target)
   } catch {
     /* handled */
@@ -288,7 +303,7 @@ async function reload() {
 onMounted(async () => {
   try {
     await segmentStore.loadRuns()
-    const target = segmentStore.latestCompleted?.id ?? segmentStore.runs[0]?.id
+    const target = segmentStore.currentVersion?.id ?? segmentStore.runs[0]?.id
     if (target) await loadContext(target)
   } catch {
     /* handled */

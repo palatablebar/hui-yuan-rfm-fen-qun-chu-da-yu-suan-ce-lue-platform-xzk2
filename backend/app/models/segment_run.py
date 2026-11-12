@@ -1,6 +1,16 @@
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, ForeignKey, Integer, Numeric, String, Text, func
+from sqlalchemy import (
+    Boolean,
+    Date,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -12,6 +22,13 @@ class SegmentRun(Base):
 
     `result` 是算法完整快照（簇画像 / 每人分数 / 直方图 / 散点），
     保证「同一批数据 + 同一 random_state → 同一结果」可被审计复算。
+
+    版本化（订单补录场景）：
+    - 历史批次全部保留，仅 `is_current=True` 的批次是当前版本，同一时刻至多一条；
+    - `input_fingerprint` 覆盖 as-of / k / 会员与订单事实内容，重复补录命中同一指纹，
+      创建接口直接复用旧批次，不新增名单、不触发预算占用；
+    - 新批次整批校验通过后才在一个事务内切换 `is_current`，失败批次保留报告
+      （`validation_report`）且不影响原当前版本。
     """
 
     __tablename__ = "segment_runs"
@@ -30,6 +47,10 @@ class SegmentRun(Base):
     result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_current: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    current_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    input_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    validation_report: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

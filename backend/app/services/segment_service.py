@@ -16,7 +16,7 @@ from app.config.settings import settings
 from app.constants.error_codes import AppError, ErrorCode
 from app.constants.rfm import REFERENCE_DATE, RANDOM_STATE
 from app.models import Member, OrderFact, SegmentRun, User
-from app.services import rfm_engine
+from app.services import batch_versioning, rfm_engine
 from app.utils.formatting import to_iso
 from app.utils.logger import log_event
 from app.utils.pagination import page_params, paginated
@@ -39,6 +39,7 @@ def serialize_run_summary(run: SegmentRun) -> dict:
     cluster_count = 0
     if run.result and isinstance(run.result, dict):
         cluster_count = len(run.result.get("clusters") or [])
+    report = run.validation_report if isinstance(run.validation_report, dict) else None
     return {
         "id": run.id,
         "run_no": run.run_no,
@@ -53,6 +54,10 @@ def serialize_run_summary(run: SegmentRun) -> dict:
         "cluster_count": cluster_count,
         "duration_ms": run.duration_ms,
         "error_message": run.error_message,
+        "is_current": run.is_current,
+        "current_since": to_iso(run.current_since),
+        "input_fingerprint": run.input_fingerprint,
+        "validation_ok": report.get("ok") if report else None,
         "created_at": to_iso(run.created_at),
         "completed_at": to_iso(run.completed_at),
     }
@@ -71,14 +76,22 @@ def serialize_run(run: SegmentRun, detail: bool = False) -> dict:
                 "gmv_total": result.get("gmv_total"),
                 "assignments_count": len(result.get("assignments") or []),
                 "scoring_note": result.get("scoring_note"),
+                "validation_report": run.validation_report,
                 "k_min": 3,
                 "k_max": 8,
             }
         )
+    elif detail:
+        payload["validation_report"] = run.validation_report
     return payload
 
 
-def create_run(db: Session, payload, user: User, run_no: str | None = None) -> SegmentRun:
+def create_run(db: Session, payload, user: User, run_no: str | None = None) -> tuple[SegmentRun, bool]:
+    """创建分群批次，返回 ``(run, replayed)``。
+
+    幂等：相同 as-of / k / 会员与订单事实内容（input_fingerprint）已存在有效批次时，
+    直接复用旧批次，不新增批次、名单与触达记录，也不触发任何预算占用。
+    """
     raw_k = payload.k
     if raw_k in (None, "", "auto"):
         k_value = "auto"
@@ -92,6 +105,18 @@ def create_run(db: Session, payload, user: User, run_no: str | None = None) -> S
         k_value = str(k_int)
 
     as_of = payload.as_of or REFERENCE_DATE
+    fingerprint = batch_versioning.input_fingerprint(db, as_of, k_value, RANDOM_STATE)
+
+    # 同一补录重复运行：命中指纹直接复用，不计配额、不落新批次
+    existing = batch_versioning.find_replayable_run(db, fingerprint)
+    if existing is not None:
+        log_event(
+            "SEGMENT_REPLAY_DEDUP",
+            run_id=existing.id,
+            run_no=existing.run_no,
+            fingerprint=fingerprint[:12],
+        )
+        return existing, True
 
     since = datetime.now(timezone.utc) - timedelta(hours=24)
     recent = (
@@ -117,10 +142,29 @@ def create_run(db: Session, payload, user: User, run_no: str | None = None) -> S
         k_requested=k_value,
         as_of=as_of,
         random_state=RANDOM_STATE,
+        input_fingerprint=fingerprint,
         created_by=user.id,
     )
     db.add(run)
-    db.commit()
+    try:
+        db.commit()
+    except Exception as exc:  # 并发下同一指纹的唯一索引冲突 → 回退为幂等复用
+        db.rollback()
+        existing = batch_versioning.find_replayable_run(db, fingerprint)
+        if existing is not None:
+            log_event(
+                "SEGMENT_REPLAY_RACE",
+                run_id=existing.id,
+                run_no=existing.run_no,
+                fingerprint=fingerprint[:12],
+            )
+            return existing, True
+        raise AppError(
+            ErrorCode.QUOTA_EXCEEDED,
+            "分群批次创建冲突，请稍后重试",
+            409,
+            {"reason": f"{type(exc).__name__}: {exc}"},
+        ) from exc
     db.refresh(run)
 
     try:
@@ -132,7 +176,7 @@ def create_run(db: Session, payload, user: User, run_no: str | None = None) -> S
         log_event("SEGMENT_DISPATCH_FALLBACK", run_id=run.id, reason=f"{type(exc).__name__}: {exc}")
         execute_run_sync(db, run)
     db.refresh(run)
-    return run
+    return run, False
 
 
 def execute_run_sync(db: Session, run: SegmentRun) -> SegmentRun:
@@ -182,6 +226,25 @@ def execute_run_sync(db: Session, run: SegmentRun) -> SegmentRun:
         run.inertia = result["inertia"]
         run.member_count = result["member_count"]
         run.error_message = None
+
+        # 整批校验：会员 / 订单 / 簇人数三方对账，通过后才允许成为当前版本
+        report = batch_versioning.validate_run_result(db, run)
+        run.validation_report = report
+        if report["ok"]:
+            # 单事务切换：旧批次保留为历史版本，新批次成为当前版本
+            batch_versioning.activate_run(db, run)
+            log_event(
+                "SEGMENT_ACTIVATED",
+                run_id=run.id,
+                run_no=run.run_no,
+                fingerprint=(run.input_fingerprint or "")[:12],
+            )
+        else:
+            # 校验失败：批次保留、报告留存，原当前版本（若有）保持不变
+            run.is_current = False
+            run.current_since = None
+            run.error_message = "整批校验未通过，未切换当前版本"
+            log_event("SEGMENT_BATCH_INVALID", run_id=run.id, run_no=run.run_no)
         log_event(
             "SEGMENT_COMPLETED",
             run_id=run.id,
@@ -189,6 +252,7 @@ def execute_run_sync(db: Session, run: SegmentRun) -> SegmentRun:
             k=result["selected_k"],
             silhouette=result["silhouette"],
             members=result["member_count"],
+            validation_ok=report["ok"],
         )
     except rfm_engine.SegmentationError as exc:
         run.status = "failed"
@@ -204,6 +268,23 @@ def execute_run_sync(db: Session, run: SegmentRun) -> SegmentRun:
         db.commit()
         db.refresh(run)
     return run
+
+
+def activate_current_run(db: Session, run_id: int) -> SegmentRun:
+    """手动把一个已通过校验的历史批次设为当前版本。"""
+    run = get_run(db, run_id)
+    activated = batch_versioning.activate_run(db, run)
+    log_event("SEGMENT_MANUAL_ACTIVATE", run_id=activated.id, run_no=activated.run_no)
+    return activated
+
+
+def get_current(db: Session) -> SegmentRun | None:
+    return batch_versioning.get_current_run(db)
+
+
+def get_reconciliation(db: Session, run_id: int) -> dict:
+    run = get_run(db, run_id)
+    return batch_versioning.reconcile_run(db, run)
 
 
 def list_runs(db: Session, limit: int = 20) -> list[dict]:
