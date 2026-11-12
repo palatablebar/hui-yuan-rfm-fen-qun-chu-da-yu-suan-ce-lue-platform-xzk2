@@ -1,0 +1,43 @@
+/* 地质分层剖面色板：砂岩 / 赭石 / 铁锈 / 苔痕 / 板岩；oklch 定义，无纯黑纯白 */
+:root {
+  color-scheme: light;
+
+  --paper: oklch(0.963 0.015 84);
+  --paper-2: oklch(0.94 0.021 80);
+  --paper-3: oklch(0.908 0.03 76);
+  --paper-4: oklch(0.875 0.035 72);
+  --ink: oklch(0.285 0.028 52);
+  --ink-2: oklch(0.398 0.031 55);
+  --ink-3: oklch(0.515 0.028 60);
+  --line: oklch(0.845 0.028 74);
+  --line-strong: oklch(0.755 0.042 66);
+
+  --sand-1: oklch(0.895 0.042 84);
+  --sand-2: oklch(0.825 0.068 76);
+  --sand-3: oklch(0.745 0.088 64);
+  --sand-4: oklch(0.655 0.098 52);
+  --sand-5: oklch(0.565 0.09 44);
+  --rust: oklch(0.552 0.135 36);
+  --ochre: oklch(0.715 0.125 70);
+  --moss: oklch(0.545 0.062 142);
+  --slate: oklch(0.475 0.038 232);
+  --deep: oklch(0.325 0.042 46);
+  --danger: oklch(0.53 0.155 28);
+  --ok: oklch(0.515 0.095 148);
+  --highlight: oklch(0.78 0.13 82);
+
+  --font-display: 'Fraunces', 'Songti SC', 'STSong', Georgia, serif;
+  --font-body: 'IBM Plex Sans', 'PingFang SC', 'Microsoft YaHei', 'Helvetica Neue', sans-serif;
+
+  --step--1: clamp(0.72rem, 0.7rem + 0.1vw, 0.79rem);
+  --step-0: clamp(0.84rem, 0.81rem + 0.14vw, 0.94rem);
+  --step-1: clamp(1rem, 0.94rem + 0.3vw, 1.18rem);
+  --step-2: clamp(1.24rem, 1.1rem + 0.6vw, 1.6rem);
+  --step-3: clamp(1.6rem, 1.35rem + 1.1vw, 2.2rem);
+  --step-4: clamp(2rem, 1.6rem + 1.8vw, 3rem);
+  --step-5: clamp(2.6rem, 1.9rem + 3.2vw, 4.3rem);
+
+  --radius: 2px;
+  --rail-w: 82px;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+}
